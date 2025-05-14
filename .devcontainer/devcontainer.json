@@ -1,0 +1,46 @@
+{
+    "name": "CSV Navigator Development",
+    "dockerFile": "Dockerfile",
+    "context": "..",
+    "remoteUser": "developer",
+
+    // Set *default* container specific settings.json values on container create.
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "editor.formatOnSave": true,
+                "rust-analyzer.check.command": "clippy",
+                "rust-analyzer.checkOnSave": true
+            },
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "serayuzgur.crates",
+                "vadimcn.vscode-lldb",
+                "ms-vscode.cpptools",
+                "usernamehw.errorlens"
+            ]
+        }
+    },
+
+    // Add the IDs of extensions you want installed when the container is created.
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {
+            "version": "latest"
+        }
+    },
+
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    // "forwardPorts": [],
+
+    // Use 'postStartCommand' to run commands after the container is created.
+    "postStartCommand": "rustc --version && cargo --version",
+
+    // For GUI applications - Add these lines
+    "runArgs": [
+        "--net=host",
+        "-e", "DISPLAY=${localEnv:DISPLAY}",
+        "-v", "/tmp/.X11-unix:/tmp/.X11-unix"
+    ]
+}

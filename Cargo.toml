@@ -1,0 +1,19 @@
+[package]
+name = "csv-navigator"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+slint = "1.11.0"
+
+[build-dependencies]
+slint-build = "1.11.0"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "csv-navigator"
+path = "src/main.rs"

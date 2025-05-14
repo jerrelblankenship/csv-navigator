@@ -1,0 +1,97 @@
+import { Button, VerticalBox, HorizontalBox, ListView, LineEdit, StandardListView } from "std-widgets.slint";
+
+export struct CellData {
+    text: string,
+}
+
+component CsvTable inherits Rectangle {
+    in property <[string]> column_headers;
+    in property <[[string]]> rows;
+
+    VerticalBox {
+        // Headers row
+        HorizontalBox {
+            padding: 0;
+            spacing: 1px;
+            for header in column_headers: Rectangle {
+                background: #e0e0e0;
+                height: 40px;
+                width: 150px;
+                Text {
+                    text: header;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Data rows
+        Rectangle {
+            clip: true;
+            ListView {
+                for row in rows: HorizontalBox {
+                    padding: 0;
+                    spacing: 1px;
+
+                    for cell in row: Rectangle {
+                        background: #f5f5f5;
+                        height: 30px;
+                        width: 150px;
+
+                        Text {
+                            text: cell;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "CSV Navigator";
+    min-width: 640px;
+    min-height: 480px;
+
+    in property <string> status_message: "";
+    in property <[string]> column_headers;
+    in property <[[string]]> csv_data;
+
+    callback open_file();
+    callback save_file();
+
+    VerticalBox {
+        // Toolbar
+        HorizontalBox {
+            padding: 10px;
+            spacing: 10px;
+            alignment: start;
+
+            Button {
+                text: "Open CSV";
+                clicked => { open_file(); }
+            }
+
+            Button {
+                text: "Save";
+                clicked => { save_file(); }
+            }
+
+            Rectangle { width: 20px; }
+
+            Text {
+                text: status_message;
+                color: #007acc;
+            }
+        }
+
+        // CSV Table
+        CsvTable {
+            column_headers: root.column_headers;
+            rows: root.csv_data;
+        }
+    }
+}
