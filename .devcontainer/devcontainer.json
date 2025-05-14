@@ -39,8 +39,12 @@
 
     // For GUI applications - Add these lines
     "runArgs": [
-        "--net=host",
-        "-e", "DISPLAY=${localEnv:DISPLAY}",
-        "-v", "/tmp/.X11-unix:/tmp/.X11-unix"
-    ]
+        "-e", "DISPLAY=host.docker.internal:0",
+        "-v", "/tmp/.X11-unix:/tmp/.X11-unix",
+        "--user", "developer:developer",
+        "-v", "${localEnv:HOME}/.cursor-server:/home/developer/.cursor-server"
+    ],
+
+    // Initialize the container with the correct permissions
+    "initializeCommand": "mkdir -p ${localEnv:HOME}/.cursor-server && chmod 777 ${localEnv:HOME}/.cursor-server"
 }

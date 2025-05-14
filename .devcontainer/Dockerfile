@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     libxcb-shape0-dev \
     libxcb-xfixes0-dev \
     libxkbcommon-dev \
+    libxkbcommon-x11-dev \
     cmake \
     ninja-build \
     libfontconfig-dev \
