@@ -19,7 +19,8 @@
                 "serayuzgur.crates",
                 "vadimcn.vscode-lldb",
                 "ms-vscode.cpptools",
-                "usernamehw.errorlens"
+                "usernamehw.errorlens",
+                "slint.slint"
             ]
         }
     },
