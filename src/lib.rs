@@ -19,6 +19,24 @@ impl AppConfig {
         }
     }
 
+    /// Creates a new AppConfig with a custom title
+    pub fn with_title(title: &str) -> Self {
+        Self {
+            window_title: String::from(title),
+            min_width: 640,
+            min_height: 480,
+        }
+    }
+
+    /// Creates a new AppConfig with custom dimensions
+    pub fn with_dimensions(width: u32, height: u32) -> Self {
+        Self {
+            window_title: String::from("CSV Navigator"),
+            min_width: width,
+            min_height: height,
+        }
+    }
+
     /// Returns the window title
     pub fn window_title(&self) -> &str {
         &self.window_title
@@ -48,18 +66,33 @@ impl Default for AppConfig {
     }
 }
 
-/// Creates and initializes the application
+/// Creates and initializes the application with a specific configuration
 /// Returns a Result containing the AppWindow or a PlatformError
-pub fn create_app() -> Result<AppWindow, slint::PlatformError> {
-    let config = AppConfig::new();
-    let ui = AppWindow::new()?;
-
-    // Verify configuration is valid
+pub fn create_app_with_config(config: AppConfig) -> Result<AppWindow, slint::PlatformError> {
+    // Validate configuration before attempting to create window
     if !config.is_valid() {
-        return Err(slint::PlatformError::NoPlatform);
+        // Return a more appropriate error for invalid configuration
+        return Err(slint::PlatformError::Other(
+            "Invalid application configuration: title must not be empty and dimensions must be positive".into()
+        ));
     }
 
+    let ui = AppWindow::new()?;
+
+    // Apply configuration to the window
+    ui.set_window_title(config.window_title().into());
+
+    // Note: Slint's logical sizes are set in the .slint file
+    // The min-width and min-height in our config serve as validation
+    // In a production app, you could extend this to set initial window size
+
     Ok(ui)
+}
+
+/// Creates and initializes the application with default configuration
+/// Returns a Result containing the AppWindow or a PlatformError
+pub fn create_app() -> Result<AppWindow, slint::PlatformError> {
+    create_app_with_config(AppConfig::new())
 }
 
 /// Runs the application from start to finish
