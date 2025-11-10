@@ -1,5 +1,5 @@
 use csv_navigator::run_app;
 
-fn main() -> Result<(), slint::PlatformError> {
+fn main() -> anyhow::Result<()> {
     run_app()
 }
