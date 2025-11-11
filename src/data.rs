@@ -22,6 +22,8 @@ pub enum CsvError {
     Io(std::io::Error),
     /// CSV parsing error
     Csv(csv::Error),
+    /// JSON serialization/deserialization error
+    Json(serde_json::Error),
     /// Invalid data structure (e.g., inconsistent column counts)
     InvalidData(String),
 }
@@ -31,6 +33,7 @@ impl std::fmt::Display for CsvError {
         match self {
             CsvError::Io(e) => write!(f, "IO error: {}", e),
             CsvError::Csv(e) => write!(f, "CSV error: {}", e),
+            CsvError::Json(e) => write!(f, "JSON error: {}", e),
             CsvError::InvalidData(s) => write!(f, "Invalid data: {}", s),
         }
     }
@@ -47,6 +50,12 @@ impl From<std::io::Error> for CsvError {
 impl From<csv::Error> for CsvError {
     fn from(err: csv::Error) -> Self {
         CsvError::Csv(err)
+    }
+}
+
+impl From<serde_json::Error> for CsvError {
+    fn from(err: serde_json::Error) -> Self {
+        CsvError::Json(err)
     }
 }
 
@@ -910,6 +919,81 @@ impl CsvTable {
         }
 
         writer.flush()?;
+        Ok(())
+    }
+
+    /// Exports the table to JSON as an array of objects
+    ///
+    /// Each row becomes a JSON object with header names as keys.
+    /// If no headers are present, uses generic column names (col0, col1, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `pretty` - If true, formats the JSON with indentation for readability
+    ///
+    /// # Returns
+    ///
+    /// Returns a JSON string on success or an error
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use csv_navigator::data::CsvTable;
+    /// let table = CsvTable::with_headers(vec!["Name".to_string(), "Age".to_string()]);
+    /// // ... add data ...
+    /// let json = table.to_json(false).unwrap();
+    /// ```
+    pub fn to_json(&self, pretty: bool) -> Result<String, CsvError> {
+        let mut result = Vec::new();
+
+        // Determine headers (use existing or generate generic ones)
+        let headers: Vec<String> = match &self.headers {
+            Some(h) => h.clone(),
+            None => {
+                let col_count = self.column_count();
+                (0..col_count).map(|i| format!("col{}", i)).collect()
+            }
+        };
+
+        // Convert each row to a JSON object
+        for row in &self.data {
+            let mut obj = serde_json::Map::new();
+            for (i, value) in row.iter().enumerate() {
+                if let Some(header) = headers.get(i) {
+                    obj.insert(header.clone(), serde_json::Value::String(value.clone()));
+                }
+            }
+            result.push(serde_json::Value::Object(obj));
+        }
+
+        // Serialize to JSON
+        let json = if pretty {
+            serde_json::to_string_pretty(&result)?
+        } else {
+            serde_json::to_string(&result)?
+        };
+
+        Ok(json)
+    }
+
+    /// Exports the table to a JSON file as an array of objects
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the JSON file will be written
+    /// * `pretty` - If true, formats the JSON with indentation for readability
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use csv_navigator::data::CsvTable;
+    /// let table = CsvTable::with_headers(vec!["Name".to_string(), "Age".to_string()]);
+    /// // ... add data ...
+    /// table.to_json_file("output.json", true).unwrap();
+    /// ```
+    pub fn to_json_file<P: AsRef<Path>>(&self, path: P, pretty: bool) -> Result<(), CsvError> {
+        let json = self.to_json(pretty)?;
+        std::fs::write(path, json)?;
         Ok(())
     }
 }
@@ -2024,5 +2108,91 @@ mod tests {
 
         // No more undo actions
         assert!(!table.can_undo());
+    }
+
+    // JSON export tests
+    #[test]
+    fn test_json_export_with_headers() {
+        let mut table = CsvTable::with_headers(vec![
+            "Name".to_string(),
+            "Age".to_string(),
+            "City".to_string(),
+        ]);
+        table.data.push(vec!["Alice".to_string(), "30".to_string(), "NYC".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string(), "LA".to_string()]);
+
+        let json = table.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.is_array());
+        let array = parsed.as_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        // Check first row
+        assert_eq!(array[0]["Name"], "Alice");
+        assert_eq!(array[0]["Age"], "30");
+        assert_eq!(array[0]["City"], "NYC");
+
+        // Check second row
+        assert_eq!(array[1]["Name"], "Bob");
+        assert_eq!(array[1]["Age"], "25");
+        assert_eq!(array[1]["City"], "LA");
+    }
+
+    #[test]
+    fn test_json_export_without_headers() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+
+        let json = table.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.is_array());
+        let array = parsed.as_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        // Should use generic column names
+        assert_eq!(array[0]["col0"], "Alice");
+        assert_eq!(array[0]["col1"], "30");
+        assert_eq!(array[1]["col0"], "Bob");
+        assert_eq!(array[1]["col1"], "25");
+    }
+
+    #[test]
+    fn test_json_export_empty_table() {
+        let table = CsvTable::new();
+        let json = table.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.is_array());
+        let array = parsed.as_array().unwrap();
+        assert_eq!(array.len(), 0);
+    }
+
+    #[test]
+    fn test_json_export_pretty() {
+        let mut table = CsvTable::with_headers(vec!["Name".to_string()]);
+        table.data.push(vec!["Alice".to_string()]);
+
+        let json = table.to_json(true).unwrap();
+
+        // Pretty JSON should have newlines and indentation
+        assert!(json.contains('\n'));
+        assert!(json.contains("  "));
+    }
+
+    #[test]
+    fn test_json_export_special_characters() {
+        let mut table = CsvTable::with_headers(vec!["Text".to_string()]);
+        table.data.push(vec!["Hello \"World\"".to_string()]);
+        table.data.push(vec!["Line1\nLine2".to_string()]);
+
+        let json = table.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let array = parsed.as_array().unwrap();
+        assert_eq!(array[0]["Text"], "Hello \"World\"");
+        assert_eq!(array[1]["Text"], "Line1\nLine2");
     }
 }
