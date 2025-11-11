@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 pub mod data;
+pub mod ui;
 
 /// Application configuration structure
 /// Holds basic configuration for the CSV Navigator application
@@ -101,6 +102,10 @@ pub fn create_app() -> Result<AppWindow, slint::PlatformError> {
 /// This is the main entry point for the application
 pub fn run_app() -> Result<(), slint::PlatformError> {
     let ui = create_app()?;
+
+    // Set up UI callbacks for file operations, filtering, and sorting
+    ui::setup_callbacks(&ui);
+
     ui.run()
 }
 

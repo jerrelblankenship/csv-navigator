@@ -1,0 +1,411 @@
+import { Button, VerticalBox, HorizontalBox, ListView, LineEdit, ComboBox, StandardButton, CheckBox } from "std-widgets.slint";
+
+// Data structure for table cells
+export struct CellData {
+    text: string,
+}
+
+// Row data structure
+export struct RowData {
+    cells: [string],
+}
+
+// CSV Table component with virtualized rendering
+component CsvTable inherits Rectangle {
+    in property <[string]> column-headers;
+    in property <[[string]]> rows;
+
+    callback header-clicked(int);  // Callback when header is clicked for sorting
+
+    VerticalBox {
+        // Headers row
+        HorizontalBox {
+            padding: 0;
+            spacing: 1px;
+
+            for header[index] in column-headers: Rectangle {
+                background: #e0e0e0;
+                border-width: 1px;
+                border-color: #cccccc;
+                height: 40px;
+                min-width: 120px;
+
+                HorizontalBox {
+                    padding: 5px;
+                    spacing: 5px;
+
+                    Text {
+                        text: header;
+                        font-weight: 700;
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                // Click area for sorting
+                TouchArea {
+                    clicked => {
+                        header-clicked(index);
+                    }
+                }
+            }
+        }
+
+        // Data rows (virtualized via ListView)
+        Rectangle {
+            clip: true;
+            background: white;
+
+            ListView {
+                for row[row-index] in rows: HorizontalBox {
+                    padding: 0;
+                    spacing: 1px;
+
+                    for cell[col-index] in row: Rectangle {
+                        background: Math.mod(row-index, 2) == 0 ? #f9f9f9 : white;
+                        border-width: 1px;
+                        border-color: #e0e0e0;
+                        height: 32px;
+                        min-width: 120px;
+
+                        HorizontalBox {
+                            padding-left: 5px;
+                            padding-right: 5px;
+
+                            Text {
+                                text: cell;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Main application window
+export component AppWindow inherits Window {
+    // Window configuration
+    in property <string> window-title: "CSV Navigator";
+    title: window-title;
+    min-width: 800px;
+    min-height: 600px;
+
+    // Data properties
+    in property <[string]> column-headers;
+    in property <[[string]]> csv-data;
+
+    // Status properties
+    in property <string> status-message: "";
+    in property <int> total-rows: 0;
+    in property <int> filtered-rows: 0;
+    in property <bool> has-filter: false;
+
+    // Filter properties
+    in-out property <int> filter-column-index: -1;
+    in-out property <string> filter-operator: "Equals";
+    in-out property <string> filter-value: "";
+    in-out property <bool> filter-logic-all: true;  // true = All/AND, false = Any/OR
+
+    // Sort properties
+    in property <int> sort-column-index: -1;
+    in property <bool> sort-ascending: true;
+
+    // Dialog state
+    property <bool> show-about-dialog: false;
+
+    // Callbacks
+    callback open-file();
+    callback save-file();
+    callback export-json();
+    callback export-xlsx();
+    callback import-xlsx();
+
+    callback apply-filter();
+    callback clear-filter();
+    callback sort-column(int);  // Sort by column index
+
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+
+        // Toolbar
+        Rectangle {
+            background: #f0f0f0;
+            height: 50px;
+
+            HorizontalBox {
+                padding: 10px;
+                spacing: 10px;
+                alignment: start;
+
+            Button {
+                text: "Open CSV";
+                clicked => { open-file(); }
+            }
+
+            Button {
+                text: "Save CSV";
+                clicked => { save-file(); }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: #cccccc;
+            }
+
+            Button {
+                text: "Import XLSX";
+                clicked => { import-xlsx(); }
+            }
+
+            Button {
+                text: "Export XLSX";
+                clicked => { export-xlsx(); }
+            }
+
+            Button {
+                text: "Export JSON";
+                clicked => { export-json(); }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "About";
+                clicked => {
+                    show-about-dialog = true;
+                }
+            }
+
+            Rectangle {
+                width: 10px;
+            }
+
+                Text {
+                    text: status-message;
+                    color: #007acc;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Filter bar
+        Rectangle {
+            background: #e8e8e8;
+            height: 60px;
+
+            HorizontalBox {
+                padding: 10px;
+                spacing: 10px;
+
+            Text {
+                text: "Filter:";
+                vertical-alignment: center;
+                font-weight: 600;
+            }
+
+            ComboBox {
+                model: column-headers;
+                current-index <=> filter-column-index;
+                min-width: 150px;
+            }
+
+            ComboBox {
+                model: ["Equals", "Contains", "StartsWith", "EndsWith", "GreaterThan", "LessThan", "GreaterOrEqual", "LessOrEqual"];
+                current-value <=> filter-operator;
+                min-width: 130px;
+            }
+
+            LineEdit {
+                text <=> filter-value;
+                placeholder-text: "Filter value...";
+                min-width: 200px;
+            }
+
+            // Filter logic toggle (All/Any - AND/OR)
+            HorizontalBox {
+                spacing: 5px;
+
+                Text {
+                    text: "Logic:";
+                    vertical-alignment: center;
+                }
+
+                ComboBox {
+                    model: ["All (AND)", "Any (OR)"];
+                    current-index: filter-logic-all ? 0 : 1;
+                    selected => {
+                        filter-logic-all = self.current-index == 0;
+                    }
+                    min-width: 100px;
+                }
+            }
+
+            Button {
+                text: "Apply Filter";
+                clicked => { apply-filter(); }
+                enabled: filter-column-index >= 0 && filter-value != "";
+            }
+
+            Button {
+                text: "Clear Filter";
+                clicked => { clear-filter(); }
+                enabled: has-filter;
+            }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // CSV Table
+        Rectangle {
+            vertical-stretch: 1;
+
+            CsvTable {
+                column-headers: root.column-headers;
+                rows: root.csv-data;
+
+                header-clicked(index) => {
+                    sort-column(index);
+                }
+            }
+        }
+
+        // Status bar
+        Rectangle {
+            background: #f0f0f0;
+            height: 30px;
+
+            HorizontalBox {
+                padding: 10px;
+                spacing: 15px;
+
+            Text {
+                text: total-rows > 0 ? "Total rows: " + total-rows : "No data loaded";
+                vertical-alignment: center;
+                font-size: 12px;
+            }
+
+            Text {
+                text: has-filter ? "Filtered rows: " + filtered-rows : "";
+                vertical-alignment: center;
+                font-size: 12px;
+                color: #007acc;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+                Text {
+                    text: sort-column-index >= 0 ?
+                        "Sorted by: " + column-headers[sort-column-index] + " (" + (sort-ascending ? "↑" : "↓") + ")"
+                        : "";
+                    vertical-alignment: center;
+                    font-size: 12px;
+                    color: #666666;
+                }
+            }
+        }
+    }
+
+    // About Dialog overlay
+    if show-about-dialog: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #00000080;  // Semi-transparent black overlay
+
+        TouchArea {
+            clicked => {
+                show-about-dialog = false;
+            }
+        }
+
+        Rectangle {
+            width: 500px;
+            height: 400px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: white;
+            border-width: 2px;
+            border-color: #cccccc;
+            border-radius: 8px;
+
+            VerticalBox {
+                padding: 20px;
+                spacing: 15px;
+
+                Text {
+                    text: "CSV Navigator";
+                    font-size: 24px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Version 0.1.0";
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    color: #666666;
+                }
+
+                Rectangle {
+                    height: 2px;
+                    background: #e0e0e0;
+                }
+
+                Text {
+                    text: "A modern CSV file viewer and editor built with Rust and Slint.";
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Features:\n• Load and save CSV files\n• Import/Export Excel (XLSX) files\n• Export to JSON\n• Sort data by any column\n• Filter data with multiple conditions\n• Virtualized table rendering for large datasets";
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    height: 2px;
+                    background: #e0e0e0;
+                }
+
+                Text {
+                    text: "Licensing Information";
+                    font-weight: 700;
+                    font-size: 16px;
+                }
+
+                Text {
+                    text: "CSV Navigator is open source software.\n\nThis project uses the following third-party libraries:\n\n• Slint (Rust UI framework) - GPL/Commercial\n• csv (CSV parsing) - MIT/Apache-2.0\n• serde/serde_json (Serialization) - MIT/Apache-2.0\n• rayon (Parallel processing) - MIT/Apache-2.0\n• calamine (Excel reading) - MIT\n• rust_xlsxwriter (Excel writing) - MIT/Apache-2.0\n• rfd (File dialogs) - MIT";
+                    wrap: word-wrap;
+                    font-size: 11px;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+
+                HorizontalBox {
+                    alignment: center;
+
+                    Button {
+                        text: "Close";
+                        clicked => {
+                            show-about-dialog = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
