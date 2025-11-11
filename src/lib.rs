@@ -1,5 +1,7 @@
 slint::include_modules!();
 
+pub mod data;
+
 /// Application configuration structure
 /// Holds basic configuration for the CSV Navigator application
 #[derive(Debug, Clone)]
