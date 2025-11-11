@@ -9,6 +9,10 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
+/// Default sample size for column type inference
+/// Analyzes up to this many rows to determine if a column is numeric or text
+const TYPE_INFERENCE_SAMPLE_SIZE: usize = 10_000;
+
 /// Error type for CSV operations
 #[derive(Debug)]
 pub enum CsvError {
@@ -190,6 +194,80 @@ impl CsvTable {
         }
     }
 
+    /// Infers column types by analyzing a sample of the data
+    ///
+    /// This method examines up to `sample_size` rows (default 10,000) to determine
+    /// whether each column contains numeric or text data. A column is considered
+    /// numeric if all non-empty values can be parsed as f64 numbers.
+    ///
+    /// # Arguments
+    ///
+    /// * `sample_size` - Maximum number of rows to sample (None = use default)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use csv_navigator::data::CsvTable;
+    /// let mut table = CsvTable::new();
+    /// table.data.push(vec!["123".to_string(), "Alice".to_string()]);
+    /// table.data.push(vec!["456".to_string(), "Bob".to_string()]);
+    /// table.col_types = vec![csv_navigator::data::ColType::Text; 2];
+    ///
+    /// table.infer_column_types(None);
+    /// assert_eq!(table.col_types[0], csv_navigator::data::ColType::Number);
+    /// assert_eq!(table.col_types[1], csv_navigator::data::ColType::Text);
+    /// ```
+    pub fn infer_column_types(&mut self, sample_size: Option<usize>) {
+        let col_count = self.column_count();
+        if col_count == 0 {
+            return;
+        }
+
+        let sample_size = sample_size.unwrap_or(TYPE_INFERENCE_SAMPLE_SIZE);
+        let rows_to_check = self.data.len().min(sample_size);
+
+        // Track whether each column is numeric
+        // Start by assuming all columns are numeric, then eliminate as we find text
+        let mut col_is_numeric = vec![true; col_count];
+
+        for row_idx in 0..rows_to_check {
+            if let Some(row) = self.data.get(row_idx) {
+                for (col_idx, value) in row.iter().enumerate() {
+                    if col_idx >= col_count {
+                        break;
+                    }
+
+                    // Skip if already determined to be text
+                    if !col_is_numeric[col_idx] {
+                        continue;
+                    }
+
+                    // Skip empty values - they don't affect type determination
+                    if value.trim().is_empty() {
+                        continue;
+                    }
+
+                    // Try to parse as a number
+                    if value.parse::<f64>().is_err() {
+                        col_is_numeric[col_idx] = false;
+                    }
+                }
+            }
+        }
+
+        // Update column types based on inference
+        self.col_types = col_is_numeric
+            .into_iter()
+            .map(|is_num| {
+                if is_num {
+                    ColType::Number
+                } else {
+                    ColType::Text
+                }
+            })
+            .collect();
+    }
+
     /// Loads a CSV file from a file path
     ///
     /// This method uses buffered IO for efficient reading of large files.
@@ -265,9 +343,12 @@ impl CsvTable {
             table.data.push(row);
         }
 
-        // Initialize column types (all Text by default)
+        // Initialize column types vector
         let col_count = table.column_count();
         table.col_types = vec![ColType::Text; col_count];
+
+        // Infer column types from data sample
+        table.infer_column_types(None);
 
         Ok(table)
     }
@@ -585,6 +666,171 @@ mod tests {
         let table = CsvTable::from_reader(csv_data.as_bytes(), true).unwrap();
 
         assert_eq!(table.col_types.len(), 3);
-        assert!(table.col_types.iter().all(|t| *t == ColType::Text));
+        // After type inference: Name=Text, Age=Number, City=Text
+        assert_eq!(table.col_types[0], ColType::Text);
+        assert_eq!(table.col_types[1], ColType::Number);
+        assert_eq!(table.col_types[2], ColType::Text);
+    }
+
+    // Column Type Inference Tests
+
+    #[test]
+    fn test_infer_all_numeric_column() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["123".to_string(), "Alice".to_string()]);
+        table.data.push(vec!["456".to_string(), "Bob".to_string()]);
+        table.data.push(vec!["789".to_string(), "Charlie".to_string()]);
+        table.col_types = vec![ColType::Text; 2];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Number);
+        assert_eq!(table.col_types[1], ColType::Text);
+    }
+
+    #[test]
+    fn test_infer_all_text_column() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "NYC".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "LA".to_string()]);
+        table.data.push(vec!["Charlie".to_string(), "Chicago".to_string()]);
+        table.col_types = vec![ColType::Text; 2];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Text);
+        assert_eq!(table.col_types[1], ColType::Text);
+    }
+
+    #[test]
+    fn test_infer_mixed_column_becomes_text() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["123".to_string()]);
+        table.data.push(vec!["456".to_string()]);
+        table.data.push(vec!["abc".to_string()]); // This makes it text
+        table.col_types = vec![ColType::Text; 1];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Text);
+    }
+
+    #[test]
+    fn test_infer_with_empty_values() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["123".to_string()]);
+        table.data.push(vec!["".to_string()]); // Empty should be ignored
+        table.data.push(vec!["456".to_string()]);
+        table.data.push(vec!["  ".to_string()]); // Whitespace should be ignored
+        table.data.push(vec!["789".to_string()]);
+        table.col_types = vec![ColType::Text; 1];
+
+        table.infer_column_types(None);
+
+        // Should still be numeric since empty values are ignored
+        assert_eq!(table.col_types[0], ColType::Number);
+    }
+
+    #[test]
+    fn test_infer_floating_point_numbers() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["123.45".to_string()]);
+        table.data.push(vec!["678.90".to_string()]);
+        table.data.push(vec!["-12.34".to_string()]);
+        table.data.push(vec!["0.0".to_string()]);
+        table.col_types = vec![ColType::Text; 1];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Number);
+    }
+
+    #[test]
+    fn test_infer_scientific_notation() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["1.23e10".to_string()]);
+        table.data.push(vec!["4.56E-5".to_string()]);
+        table.data.push(vec!["7.89e+2".to_string()]);
+        table.col_types = vec![ColType::Text; 1];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Number);
+    }
+
+    #[test]
+    fn test_infer_all_empty_column() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["".to_string()]);
+        table.data.push(vec!["  ".to_string()]);
+        table.data.push(vec!["".to_string()]);
+        table.col_types = vec![ColType::Text; 1];
+
+        table.infer_column_types(None);
+
+        // All empty should default to Number (optimistic inference)
+        assert_eq!(table.col_types[0], ColType::Number);
+    }
+
+    #[test]
+    fn test_infer_sample_size_limit() {
+        let mut table = CsvTable::new();
+
+        // Add 15,000 numeric rows
+        for i in 0..15_000 {
+            table.data.push(vec![i.to_string()]);
+        }
+
+        table.col_types = vec![ColType::Text; 1];
+
+        // Should only sample first 10,000 rows (default)
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types[0], ColType::Number);
+    }
+
+    #[test]
+    fn test_infer_custom_sample_size() {
+        let mut table = CsvTable::new();
+
+        // Add 100 numeric rows
+        for i in 0..100 {
+            table.data.push(vec![i.to_string()]);
+        }
+        // Add 1 text row
+        table.data.push(vec!["text".to_string()]);
+
+        table.col_types = vec![ColType::Text; 1];
+
+        // Sample only first 50 rows - should be numeric
+        table.infer_column_types(Some(50));
+        assert_eq!(table.col_types[0], ColType::Number);
+
+        // Re-test with full sample - should be text
+        table.infer_column_types(Some(200));
+        assert_eq!(table.col_types[0], ColType::Text);
+    }
+
+    #[test]
+    fn test_infer_multiple_columns() {
+        let csv_data = "Name,Age,Salary,City,Active\nAlice,30,50000.50,NYC,true\nBob,25,45000.00,LA,false";
+        let table = CsvTable::from_reader(csv_data.as_bytes(), true).unwrap();
+
+        assert_eq!(table.col_types.len(), 5);
+        assert_eq!(table.col_types[0], ColType::Text);   // Name
+        assert_eq!(table.col_types[1], ColType::Number); // Age
+        assert_eq!(table.col_types[2], ColType::Number); // Salary
+        assert_eq!(table.col_types[3], ColType::Text);   // City
+        assert_eq!(table.col_types[4], ColType::Text);   // Active (true/false as text)
+    }
+
+    #[test]
+    fn test_infer_empty_table() {
+        let mut table = CsvTable::new();
+        table.col_types = vec![];
+
+        table.infer_column_types(None);
+
+        assert_eq!(table.col_types.len(), 0);
     }
 }
