@@ -1,0 +1,83 @@
+name: Question / Discussion
+description: Ask a question or start a discussion about CSV Navigator
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about CSV Navigator? Ask away!
+
+        **Note:** For bugs, please use the Bug Report template instead.
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      description: What is your question about?
+      options:
+        - Installation & Setup
+        - Usage & Features
+        - Performance
+        - Data Formats
+        - Development & Contributing
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: Please provide as much detail as possible...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        Provide any relevant context:
+        - What are you trying to achieve?
+        - What have you already tried?
+        - Links to documentation you've read
+      placeholder: |
+        I'm trying to...
+        I've looked at...
+        I've tried...
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (if relevant)
+      description: |
+        If your question is environment-specific, provide details
+      placeholder: |
+        OS: Ubuntu 22.04
+        CSV Navigator version: v0.2.0
+        File size: 10MB, 500k rows
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Anything else that might be helpful
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues and discussions
+          required: true
+        - label: I have checked the documentation
+          required: true

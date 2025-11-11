@@ -1,0 +1,120 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for CSV Navigator
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! We appreciate your ideas for improving CSV Navigator.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem? Please describe.
+      placeholder: I'm frustrated when... / It would be helpful if...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like
+      placeholder: I would like to see... / The feature should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe alternatives you've considered
+      placeholder: I've also thought about... / Another approach could be...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: Which area does this feature relate to?
+      options:
+        - UI/UX
+        - Data Import/Export
+        - Filtering & Searching
+        - Sorting
+        - Editing
+        - Performance
+        - Accessibility
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (from your perspective)
+      description: How important is this feature to you?
+      options:
+        - Critical - I cannot use the app effectively without this
+        - High - This would significantly improve my workflow
+        - Medium - This would be nice to have
+        - Low - This is a minor improvement
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Describe your use case or workflow that would benefit from this feature
+      placeholder: |
+        I work with...
+        Currently I have to...
+        This feature would help me...
+    validations:
+      required: true
+
+  - type: textarea
+    id: mockup
+    attributes:
+      label: Mockup / Example
+      description: |
+        If applicable, add mockups, screenshots, or examples from other tools
+        Drag and drop images here
+    validations:
+      required: false
+
+  - type: textarea
+    id: technical
+    attributes:
+      label: Technical Considerations (optional)
+      description: |
+        If you have technical insights or implementation suggestions, share them here
+      placeholder: This could be implemented using... / Consider using library X...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context or information about the feature request
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify the following before submitting
+      options:
+        - label: I have searched existing issues to avoid duplicates
+          required: true
+        - label: I have provided a clear use case for this feature
+          required: true
+        - label: This is a feature request, not a bug report
+          required: true
