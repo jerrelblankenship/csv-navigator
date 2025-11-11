@@ -71,6 +71,137 @@ pub enum SortOrder {
     Descending,
 }
 
+/// Filter operator for comparing values
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterOperator {
+    /// Exact match (case-insensitive for text)
+    Equals,
+    /// Not equal (case-insensitive for text)
+    NotEquals,
+    /// Contains substring (case-insensitive)
+    Contains,
+    /// Does not contain substring (case-insensitive)
+    NotContains,
+    /// Starts with (case-insensitive)
+    StartsWith,
+    /// Ends with (case-insensitive)
+    EndsWith,
+    /// Greater than (numeric comparison)
+    GreaterThan,
+    /// Less than (numeric comparison)
+    LessThan,
+    /// Greater than or equal (numeric comparison)
+    GreaterOrEqual,
+    /// Less than or equal (numeric comparison)
+    LessOrEqual,
+}
+
+/// A single filter condition
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilterCondition {
+    /// Column index to filter on
+    pub column: usize,
+    /// Comparison operator
+    pub operator: FilterOperator,
+    /// Value to compare against
+    pub value: String,
+}
+
+impl FilterCondition {
+    /// Creates a new filter condition
+    pub fn new(column: usize, operator: FilterOperator, value: String) -> Self {
+        Self {
+            column,
+            operator,
+            value,
+        }
+    }
+
+    /// Tests if a row matches this filter condition
+    fn matches(&self, row: &[String], col_types: &[ColType]) -> bool {
+        let cell_value = match row.get(self.column) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        let col_type = col_types.get(self.column).copied().unwrap_or(ColType::Text);
+
+        match (&self.operator, col_type) {
+            (FilterOperator::Equals, ColType::Text) => {
+                cell_value.to_lowercase() == self.value.to_lowercase()
+            }
+            (FilterOperator::Equals, ColType::Number) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                cell_num.is_some() && cell_num == filter_num
+            }
+            (FilterOperator::NotEquals, ColType::Text) => {
+                cell_value.to_lowercase() != self.value.to_lowercase()
+            }
+            (FilterOperator::NotEquals, ColType::Number) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                cell_num.is_none() || cell_num != filter_num
+            }
+            (FilterOperator::Contains, _) => cell_value
+                .to_lowercase()
+                .contains(&self.value.to_lowercase()),
+            (FilterOperator::NotContains, _) => {
+                !cell_value
+                    .to_lowercase()
+                    .contains(&self.value.to_lowercase())
+            }
+            (FilterOperator::StartsWith, _) => cell_value
+                .to_lowercase()
+                .starts_with(&self.value.to_lowercase()),
+            (FilterOperator::EndsWith, _) => cell_value
+                .to_lowercase()
+                .ends_with(&self.value.to_lowercase()),
+            (FilterOperator::GreaterThan, _) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                match (cell_num, filter_num) {
+                    (Some(c), Some(f)) => c > f,
+                    _ => false,
+                }
+            }
+            (FilterOperator::LessThan, _) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                match (cell_num, filter_num) {
+                    (Some(c), Some(f)) => c < f,
+                    _ => false,
+                }
+            }
+            (FilterOperator::GreaterOrEqual, _) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                match (cell_num, filter_num) {
+                    (Some(c), Some(f)) => c >= f,
+                    _ => false,
+                }
+            }
+            (FilterOperator::LessOrEqual, _) => {
+                let cell_num = cell_value.parse::<f64>().ok();
+                let filter_num = self.value.parse::<f64>().ok();
+                match (cell_num, filter_num) {
+                    (Some(c), Some(f)) => c <= f,
+                    _ => false,
+                }
+            }
+        }
+    }
+}
+
+/// Logic for combining multiple filter conditions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterLogic {
+    /// All conditions must match (AND)
+    All,
+    /// Any condition can match (OR)
+    Any,
+}
+
 /// Main data structure for storing and managing CSV table data
 ///
 /// The CsvTable struct holds all the data for a loaded CSV file, including:
@@ -362,6 +493,54 @@ impl CsvTable {
         }
 
         Ok(())
+    }
+
+    /// Applies filters to the table and updates filtered_indices
+    ///
+    /// This method evaluates all conditions against each row and stores the indices
+    /// of rows that match. The filtered_indices field is updated accordingly.
+    ///
+    /// # Arguments
+    ///
+    /// * `conditions` - Vector of filter conditions to apply
+    /// * `logic` - How to combine conditions (All for AND, Any for OR)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use csv_navigator::data::{CsvTable, FilterCondition, FilterOperator, FilterLogic};
+    /// let mut table = CsvTable::new();
+    /// table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+    /// table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+    /// table.col_types = vec![csv_navigator::data::ColType::Text, csv_navigator::data::ColType::Number];
+    ///
+    /// let conditions = vec![
+    ///     FilterCondition::new(1, FilterOperator::GreaterThan, "26".to_string())
+    /// ];
+    /// table.apply_filters(&conditions, FilterLogic::All);
+    /// assert_eq!(table.visible_row_count(), 1);
+    /// ```
+    pub fn apply_filters(&mut self, conditions: &[FilterCondition], logic: FilterLogic) {
+        if conditions.is_empty() {
+            self.filtered_indices = None;
+            return;
+        }
+
+        let matching_indices: Vec<usize> = (0..self.data.len())
+            .filter(|&idx| {
+                let row = &self.data[idx];
+                match logic {
+                    FilterLogic::All => conditions.iter().all(|c| c.matches(row, &self.col_types)),
+                    FilterLogic::Any => conditions.iter().any(|c| c.matches(row, &self.col_types)),
+                }
+            })
+            .collect();
+
+        self.filtered_indices = if matching_indices.is_empty() || matching_indices.len() == self.data.len() {
+            None // No filter needed if all or no rows match
+        } else {
+            Some(matching_indices)
+        };
     }
 
     /// Loads a CSV file from a file path
@@ -1042,5 +1221,315 @@ mod tests {
         assert!(table.is_filtered());
         table.sort_by_column(0, SortOrder::Ascending).unwrap();
         assert!(!table.is_filtered());
+    }
+
+    // Filtering tests
+    #[test]
+    fn test_filter_equals_text() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+        table.data.push(vec!["alice".to_string(), "28".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::Equals,
+            "alice".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2); // Case insensitive match
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_equals_number() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+        table.data.push(vec!["Charlie".to_string(), "30".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            1,
+            FilterOperator::Equals,
+            "30".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_contains() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice Smith".to_string()]);
+        table.data.push(vec!["Bob Jones".to_string()]);
+        table.data.push(vec!["Charlie Smith".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::Contains,
+            "smith".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_not_contains() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice Smith".to_string()]);
+        table.data.push(vec!["Bob Jones".to_string()]);
+        table.data.push(vec!["Charlie Smith".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::NotContains,
+            "Smith".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 1);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn test_filter_starts_with() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.data.push(vec!["Alex".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::StartsWith,
+            "al".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_ends_with() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.data.push(vec!["Eve".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::EndsWith,
+            "e".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_greater_than() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["25".to_string()]);
+        table.data.push(vec!["35".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::GreaterThan,
+            "28".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_less_than() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["25".to_string()]);
+        table.data.push(vec!["35".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::LessThan,
+            "28".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 1);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn test_filter_greater_or_equal() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["25".to_string()]);
+        table.data.push(vec!["30".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::GreaterOrEqual,
+            "30".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_less_or_equal() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["25".to_string()]);
+        table.data.push(vec!["25".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::LessOrEqual,
+            "25".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_filter_multiple_conditions_all() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+        table.data.push(vec!["Alice".to_string(), "25".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let conditions = vec![
+            FilterCondition::new(0, FilterOperator::Equals, "Alice".to_string()),
+            FilterCondition::new(1, FilterOperator::GreaterThan, "26".to_string()),
+        ];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        assert_eq!(table.visible_row_count(), 1);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0]);
+    }
+
+    #[test]
+    fn test_filter_multiple_conditions_any() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+        table.data.push(vec!["Charlie".to_string(), "35".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let conditions = vec![
+            FilterCondition::new(0, FilterOperator::Equals, "Alice".to_string()),
+            FilterCondition::new(1, FilterOperator::GreaterThan, "32".to_string()),
+        ];
+        table.apply_filters(&conditions, FilterLogic::Any);
+
+        assert_eq!(table.visible_row_count(), 2);
+        let visible: Vec<usize> = table.visible_indices().collect();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_filter_empty_conditions() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.col_types = vec![ColType::Text];
+        table.filtered_indices = Some(vec![0]);
+
+        table.apply_filters(&[], FilterLogic::All);
+
+        assert!(!table.is_filtered());
+        assert_eq!(table.visible_row_count(), 2);
+    }
+
+    #[test]
+    fn test_filter_no_matches() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            0,
+            FilterOperator::Equals,
+            "Charlie".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        // No filter set when no rows match (treated as "show nothing" via empty filtered_indices)
+        assert!(!table.is_filtered());
+        assert_eq!(table.visible_row_count(), 2);
+    }
+
+    #[test]
+    fn test_filter_all_rows_match() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let conditions = vec![FilterCondition::new(
+            1,
+            FilterOperator::GreaterThan,
+            "20".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        // No filter set when all rows match
+        assert!(!table.is_filtered());
+        assert_eq!(table.visible_row_count(), 2);
+    }
+
+    #[test]
+    fn test_filter_invalid_column() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        let conditions = vec![FilterCondition::new(
+            5,
+            FilterOperator::Equals,
+            "test".to_string(),
+        )];
+        table.apply_filters(&conditions, FilterLogic::All);
+
+        // Invalid column means no rows match
+        assert!(!table.is_filtered());
+        assert_eq!(table.visible_row_count(), 2);
     }
 }
