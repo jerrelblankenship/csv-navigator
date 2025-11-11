@@ -24,6 +24,8 @@ pub enum CsvError {
     Csv(csv::Error),
     /// JSON serialization/deserialization error
     Json(serde_json::Error),
+    /// XLSX/Excel operation error
+    Xlsx(String),
     /// Invalid data structure (e.g., inconsistent column counts)
     InvalidData(String),
 }
@@ -34,6 +36,7 @@ impl std::fmt::Display for CsvError {
             CsvError::Io(e) => write!(f, "IO error: {}", e),
             CsvError::Csv(e) => write!(f, "CSV error: {}", e),
             CsvError::Json(e) => write!(f, "JSON error: {}", e),
+            CsvError::Xlsx(e) => write!(f, "XLSX error: {}", e),
             CsvError::InvalidData(s) => write!(f, "Invalid data: {}", s),
         }
     }
@@ -56,6 +59,12 @@ impl From<csv::Error> for CsvError {
 impl From<serde_json::Error> for CsvError {
     fn from(err: serde_json::Error) -> Self {
         CsvError::Json(err)
+    }
+}
+
+impl From<rust_xlsxwriter::XlsxError> for CsvError {
+    fn from(err: rust_xlsxwriter::XlsxError) -> Self {
+        CsvError::Xlsx(err.to_string())
     }
 }
 
@@ -995,6 +1004,157 @@ impl CsvTable {
         let json = self.to_json(pretty)?;
         std::fs::write(path, json)?;
         Ok(())
+    }
+
+    /// Exports the table to an Excel (.xlsx) file
+    ///
+    /// Creates an Excel workbook with a single sheet containing the table data.
+    /// Headers (if present) are written to the first row.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the XLSX file will be written
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) on success or a CsvError on failure
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use csv_navigator::data::CsvTable;
+    /// let mut table = CsvTable::with_headers(vec!["Name".to_string(), "Age".to_string()]);
+    /// table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+    /// table.to_xlsx_file("output.xlsx").unwrap();
+    /// ```
+    pub fn to_xlsx_file<P: AsRef<Path>>(&self, path: P) -> Result<(), CsvError> {
+        use rust_xlsxwriter::Workbook;
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        let mut current_row: u32 = 0;
+
+        // Write headers if present
+        if let Some(headers) = &self.headers {
+            for (col_idx, header) in headers.iter().enumerate() {
+                worksheet.write_string(current_row, col_idx as u16, header)?;
+            }
+            current_row += 1;
+        }
+
+        // Write all data rows
+        for row in &self.data {
+            for (col_idx, cell_value) in row.iter().enumerate() {
+                worksheet.write_string(current_row, col_idx as u16, cell_value)?;
+            }
+            current_row += 1;
+        }
+
+        // Save the workbook
+        workbook.save(path)?;
+        Ok(())
+    }
+
+    /// Loads an Excel (.xlsx) file from a path (reads first sheet only)
+    ///
+    /// Uses the calamine crate to read Excel files. Only the first sheet is loaded.
+    /// All cell values are converted to strings for consistency with CSV data.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the .xlsx file
+    /// * `has_headers` - Whether the first row should be treated as headers
+    ///
+    /// # Returns
+    ///
+    /// Returns a Result containing a CsvTable or a CsvError
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use csv_navigator::data::CsvTable;
+    ///
+    /// let table = CsvTable::from_xlsx_file("data.xlsx", true).unwrap();
+    /// println!("Loaded {} rows from Excel", table.row_count());
+    /// ```
+    pub fn from_xlsx_file<P: AsRef<Path>>(path: P, has_headers: bool) -> Result<Self, CsvError> {
+        use calamine::{Reader, open_workbook, Xlsx, DataType};
+
+        // Open the workbook
+        let mut workbook: Xlsx<_> = open_workbook(path.as_ref())
+            .map_err(|e| CsvError::Xlsx(format!("Failed to open workbook: {}", e)))?;
+
+        // Get the first sheet
+        let sheet_names = workbook.sheet_names().to_vec();
+        if sheet_names.is_empty() {
+            return Err(CsvError::Xlsx("No sheets found in workbook".to_string()));
+        }
+
+        let sheet_name = &sheet_names[0];
+        let range = workbook
+            .worksheet_range(sheet_name)
+            .ok_or_else(|| CsvError::Xlsx(format!("Sheet '{}' not found", sheet_name)))?
+            .map_err(|e| CsvError::Xlsx(format!("Failed to read sheet: {}", e)))?;
+
+        let mut table = CsvTable::new();
+        let mut rows = range.rows();
+
+        // Process headers if present
+        if has_headers {
+            if let Some(header_row) = rows.next() {
+                table.headers = Some(
+                    header_row
+                        .iter()
+                        .map(|cell| match cell {
+                            DataType::Empty => String::new(),
+                            DataType::String(s) => s.clone(),
+                            DataType::Float(f) => f.to_string(),
+                            DataType::Int(i) => i.to_string(),
+                            DataType::Bool(b) => b.to_string(),
+                            DataType::Error(e) => format!("#ERROR: {:?}", e),
+                            DataType::DateTime(dt) => dt.to_string(),
+                            _ => String::new(),
+                        })
+                        .collect(),
+                );
+            }
+        }
+
+        // Process data rows
+        for row in rows {
+            let row_data: Vec<String> = row
+                .iter()
+                .map(|cell| match cell {
+                    DataType::Empty => String::new(),
+                    DataType::String(s) => s.clone(),
+                    DataType::Float(f) => {
+                        // Format floats nicely - remove trailing zeros and decimal point if integer
+                        if f.fract() == 0.0 {
+                            format!("{}", *f as i64)
+                        } else {
+                            f.to_string()
+                        }
+                    }
+                    DataType::Int(i) => i.to_string(),
+                    DataType::Bool(b) => b.to_string(),
+                    DataType::Error(e) => format!("#ERROR: {:?}", e),
+                    DataType::DateTime(dt) => dt.to_string(),
+                    _ => String::new(),
+                })
+                .collect();
+
+            table.data.push(row_data);
+        }
+
+        // Initialize column types vector
+        let col_count = table.column_count();
+        table.col_types = vec![ColType::Text; col_count];
+
+        // Infer column types from data sample
+        table.infer_column_types(None);
+
+        Ok(table)
     }
 }
 
