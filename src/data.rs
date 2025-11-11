@@ -24,6 +24,8 @@ pub enum CsvError {
     Csv(csv::Error),
     /// JSON serialization/deserialization error
     Json(serde_json::Error),
+    /// XLSX/Excel operation error
+    Xlsx(String),
     /// Invalid data structure (e.g., inconsistent column counts)
     InvalidData(String),
 }
@@ -34,6 +36,7 @@ impl std::fmt::Display for CsvError {
             CsvError::Io(e) => write!(f, "IO error: {}", e),
             CsvError::Csv(e) => write!(f, "CSV error: {}", e),
             CsvError::Json(e) => write!(f, "JSON error: {}", e),
+            CsvError::Xlsx(e) => write!(f, "XLSX error: {}", e),
             CsvError::InvalidData(s) => write!(f, "Invalid data: {}", s),
         }
     }
@@ -883,6 +886,107 @@ impl CsvTable {
             }
 
             table.data.push(row);
+        }
+
+        // Initialize column types vector
+        let col_count = table.column_count();
+        table.col_types = vec![ColType::Text; col_count];
+
+        // Infer column types from data sample
+        table.infer_column_types(None);
+
+        Ok(table)
+    }
+
+    /// Loads an Excel (.xlsx) file from a path (reads first sheet only)
+    ///
+    /// Uses the calamine crate to read Excel files. Only the first sheet is loaded.
+    /// All cell values are converted to strings for consistency with CSV data.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the .xlsx file
+    /// * `has_headers` - Whether the first row should be treated as headers
+    ///
+    /// # Returns
+    ///
+    /// Returns a Result containing a CsvTable or a CsvError
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use csv_navigator::data::CsvTable;
+    ///
+    /// let table = CsvTable::from_xlsx_file("data.xlsx", true).unwrap();
+    /// println!("Loaded {} rows from Excel", table.row_count());
+    /// ```
+    pub fn from_xlsx_file<P: AsRef<Path>>(path: P, has_headers: bool) -> Result<Self, CsvError> {
+        use calamine::{Reader, open_workbook, Xlsx, DataType};
+
+        // Open the workbook
+        let mut workbook: Xlsx<_> = open_workbook(path.as_ref())
+            .map_err(|e| CsvError::Xlsx(format!("Failed to open workbook: {}", e)))?;
+
+        // Get the first sheet
+        let sheet_names = workbook.sheet_names().to_vec();
+        if sheet_names.is_empty() {
+            return Err(CsvError::Xlsx("No sheets found in workbook".to_string()));
+        }
+
+        let sheet_name = &sheet_names[0];
+        let range = workbook
+            .worksheet_range(sheet_name)
+            .ok_or_else(|| CsvError::Xlsx(format!("Sheet '{}' not found", sheet_name)))?
+            .map_err(|e| CsvError::Xlsx(format!("Failed to read sheet: {}", e)))?;
+
+        let mut table = CsvTable::new();
+        let mut rows = range.rows();
+
+        // Process headers if present
+        if has_headers {
+            if let Some(header_row) = rows.next() {
+                table.headers = Some(
+                    header_row
+                        .iter()
+                        .map(|cell| match cell {
+                            DataType::Empty => String::new(),
+                            DataType::String(s) => s.clone(),
+                            DataType::Float(f) => f.to_string(),
+                            DataType::Int(i) => i.to_string(),
+                            DataType::Bool(b) => b.to_string(),
+                            DataType::Error(e) => format!("#ERROR: {:?}", e),
+                            DataType::DateTime(dt) => dt.to_string(),
+                            _ => String::new(),
+                        })
+                        .collect(),
+                );
+            }
+        }
+
+        // Process data rows
+        for row in rows {
+            let row_data: Vec<String> = row
+                .iter()
+                .map(|cell| match cell {
+                    DataType::Empty => String::new(),
+                    DataType::String(s) => s.clone(),
+                    DataType::Float(f) => {
+                        // Format floats nicely - remove trailing zeros and decimal point if integer
+                        if f.fract() == 0.0 {
+                            format!("{}", *f as i64)
+                        } else {
+                            f.to_string()
+                        }
+                    }
+                    DataType::Int(i) => i.to_string(),
+                    DataType::Bool(b) => b.to_string(),
+                    DataType::Error(e) => format!("#ERROR: {:?}", e),
+                    DataType::DateTime(dt) => dt.to_string(),
+                    _ => String::new(),
+                })
+                .collect();
+
+            table.data.push(row_data);
         }
 
         // Initialize column types vector
@@ -2194,5 +2298,166 @@ mod tests {
         let array = parsed.as_array().unwrap();
         assert_eq!(array[0]["Text"], "Hello \"World\"");
         assert_eq!(array[1]["Text"], "Line1\nLine2");
+    }
+
+    // XLSX import tests
+    #[test]
+    fn test_xlsx_import_with_headers() {
+        use tempfile::tempdir;
+        use rust_xlsxwriter::Workbook;
+
+        // Create a test XLSX file
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_import.xlsx");
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        // Write headers
+        worksheet.write_string(0, 0, "Name").unwrap();
+        worksheet.write_string(0, 1, "Age").unwrap();
+        worksheet.write_string(0, 2, "City").unwrap();
+
+        // Write data
+        worksheet.write_string(1, 0, "Alice").unwrap();
+        worksheet.write_string(1, 1, "30").unwrap();
+        worksheet.write_string(1, 2, "NYC").unwrap();
+
+        worksheet.write_string(2, 0, "Bob").unwrap();
+        worksheet.write_string(2, 1, "25").unwrap();
+        worksheet.write_string(2, 2, "LA").unwrap();
+
+        workbook.save(&file_path).unwrap();
+
+        // Import the file
+        let table = CsvTable::from_xlsx_file(&file_path, true).unwrap();
+
+        // Verify headers
+        assert_eq!(table.headers, Some(vec![
+            "Name".to_string(),
+            "Age".to_string(),
+            "City".to_string()
+        ]));
+
+        // Verify data
+        assert_eq!(table.data.len(), 2);
+        assert_eq!(table.data[0], vec!["Alice".to_string(), "30".to_string(), "NYC".to_string()]);
+        assert_eq!(table.data[1], vec!["Bob".to_string(), "25".to_string(), "LA".to_string()]);
+    }
+
+    #[test]
+    fn test_xlsx_import_without_headers() {
+        use tempfile::tempdir;
+        use rust_xlsxwriter::Workbook;
+
+        // Create a test XLSX file without headers
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_import_no_headers.xlsx");
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        // Write data only (no headers)
+        worksheet.write_string(0, 0, "Alice").unwrap();
+        worksheet.write_string(0, 1, "30").unwrap();
+
+        worksheet.write_string(1, 0, "Bob").unwrap();
+        worksheet.write_string(1, 1, "25").unwrap();
+
+        workbook.save(&file_path).unwrap();
+
+        // Import without headers
+        let table = CsvTable::from_xlsx_file(&file_path, false).unwrap();
+
+        // Verify no headers
+        assert_eq!(table.headers, None);
+
+        // Verify data
+        assert_eq!(table.data.len(), 2);
+        assert_eq!(table.data[0], vec!["Alice".to_string(), "30".to_string()]);
+        assert_eq!(table.data[1], vec!["Bob".to_string(), "25".to_string()]);
+    }
+
+    #[test]
+    fn test_xlsx_import_empty_sheet() {
+        use tempfile::tempdir;
+        use rust_xlsxwriter::Workbook;
+
+        // Create an empty XLSX file
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_import_empty.xlsx");
+
+        let mut workbook = Workbook::new();
+        workbook.add_worksheet();
+        workbook.save(&file_path).unwrap();
+
+        // Import empty sheet
+        let table = CsvTable::from_xlsx_file(&file_path, false).unwrap();
+
+        assert_eq!(table.data.len(), 0);
+        assert_eq!(table.headers, None);
+    }
+
+    #[test]
+    fn test_xlsx_import_with_numbers() {
+        use tempfile::tempdir;
+        use rust_xlsxwriter::Workbook;
+
+        // Create a test XLSX file with numbers
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_import_numbers.xlsx");
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        // Write headers
+        worksheet.write_string(0, 0, "ID").unwrap();
+        worksheet.write_string(0, 1, "Score").unwrap();
+
+        // Write numeric data
+        worksheet.write_number(1, 0, 1).unwrap();
+        worksheet.write_number(1, 1, 95.5).unwrap();
+
+        worksheet.write_number(2, 0, 2).unwrap();
+        worksheet.write_number(2, 1, 87.3).unwrap();
+
+        workbook.save(&file_path).unwrap();
+
+        // Import the file
+        let table = CsvTable::from_xlsx_file(&file_path, true).unwrap();
+
+        // Verify data (should be converted to strings)
+        assert_eq!(table.data.len(), 2);
+        assert_eq!(table.data[0], vec!["1".to_string(), "95.5".to_string()]);
+        assert_eq!(table.data[1], vec!["2".to_string(), "87.3".to_string()]);
+    }
+
+    #[test]
+    fn test_xlsx_import_mixed_types() {
+        use tempfile::tempdir;
+        use rust_xlsxwriter::Workbook;
+
+        // Create a test XLSX file with mixed data types
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_import_mixed.xlsx");
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        // Write mixed types
+        worksheet.write_string(0, 0, "Text").unwrap();
+        worksheet.write_number(0, 1, 123).unwrap();
+        worksheet.write_string(0, 2, "456.78").unwrap();
+
+        workbook.save(&file_path).unwrap();
+
+        // Import the file
+        let table = CsvTable::from_xlsx_file(&file_path, false).unwrap();
+
+        // Verify all converted to strings
+        assert_eq!(table.data.len(), 1);
+        assert_eq!(table.data[0][0], "Text");
+        assert_eq!(table.data[0][1], "123");
+        assert_eq!(table.data[0][2], "456.78");
     }
 }
