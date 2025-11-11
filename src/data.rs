@@ -202,6 +202,183 @@ pub enum FilterLogic {
     Any,
 }
 
+/// Represents a single edit action that can be undone/redone
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EditAction {
+    /// Set a single cell value
+    /// (row, col, old_value, new_value)
+    SetCell {
+        row: usize,
+        col: usize,
+        old_value: String,
+        new_value: String,
+    },
+    /// Set multiple cells at once (grouped action)
+    /// Vector of (row, col, old_value, new_value) tuples
+    MultiSet(Vec<(usize, usize, String, String)>),
+}
+
+impl EditAction {
+    /// Creates a SetCell action
+    pub fn set_cell(row: usize, col: usize, old_value: String, new_value: String) -> Self {
+        EditAction::SetCell {
+            row,
+            col,
+            old_value,
+            new_value,
+        }
+    }
+
+    /// Creates a MultiSet action from a vector of cell changes
+    pub fn multi_set(changes: Vec<(usize, usize, String, String)>) -> Self {
+        EditAction::MultiSet(changes)
+    }
+
+    /// Returns the inverse action (for redo after undo)
+    fn inverse(&self) -> Self {
+        match self {
+            EditAction::SetCell {
+                row,
+                col,
+                old_value,
+                new_value,
+            } => EditAction::SetCell {
+                row: *row,
+                col: *col,
+                old_value: new_value.clone(),
+                new_value: old_value.clone(),
+            },
+            EditAction::MultiSet(changes) => {
+                let inverted: Vec<_> = changes
+                    .iter()
+                    .map(|(r, c, old, new)| (*r, *c, new.clone(), old.clone()))
+                    .collect();
+                EditAction::MultiSet(inverted)
+            }
+        }
+    }
+
+    /// Applies this action to a table (used for redo)
+    fn apply(&self, table: &mut CsvTable) -> Result<(), String> {
+        match self {
+            EditAction::SetCell {
+                row,
+                col,
+                new_value,
+                ..
+            } => {
+                if *row >= table.data.len() {
+                    return Err(format!("Row {} out of bounds", row));
+                }
+                if *col >= table.data[*row].len() {
+                    return Err(format!("Column {} out of bounds in row {}", col, row));
+                }
+                table.data[*row][*col] = new_value.clone();
+                Ok(())
+            }
+            EditAction::MultiSet(changes) => {
+                for (row, col, _, new_value) in changes {
+                    if *row >= table.data.len() {
+                        return Err(format!("Row {} out of bounds", row));
+                    }
+                    if *col >= table.data[*row].len() {
+                        return Err(format!("Column {} out of bounds in row {}", col, row));
+                    }
+                    table.data[*row][*col] = new_value.clone();
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Manages undo/redo history for table edits
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct History {
+    /// Stack of actions that can be undone
+    undo_stack: Vec<EditAction>,
+    /// Stack of actions that can be redone
+    redo_stack: Vec<EditAction>,
+    /// Maximum number of actions to keep in history
+    max_history: usize,
+}
+
+impl History {
+    /// Creates a new history with the specified maximum size
+    pub fn new(max_history: usize) -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            max_history,
+        }
+    }
+
+    /// Adds an action to the undo stack and clears the redo stack
+    pub fn push(&mut self, action: EditAction) {
+        self.undo_stack.push(action);
+
+        // Limit stack size
+        if self.undo_stack.len() > self.max_history {
+            self.undo_stack.remove(0);
+        }
+
+        // New action invalidates redo stack
+        self.redo_stack.clear();
+    }
+
+    /// Returns true if there are actions that can be undone
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// Returns true if there are actions that can be redone
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Pops an action from the undo stack
+    fn pop_undo(&mut self) -> Option<EditAction> {
+        self.undo_stack.pop()
+    }
+
+    /// Pops an action from the redo stack
+    fn pop_redo(&mut self) -> Option<EditAction> {
+        self.redo_stack.pop()
+    }
+
+    /// Pushes an action to the redo stack
+    fn push_redo(&mut self, action: EditAction) {
+        self.redo_stack.push(action);
+
+        // Limit stack size
+        if self.redo_stack.len() > self.max_history {
+            self.redo_stack.remove(0);
+        }
+    }
+
+    /// Pushes an action to the undo stack (used after redo)
+    fn push_undo(&mut self, action: EditAction) {
+        self.undo_stack.push(action);
+
+        // Limit stack size
+        if self.undo_stack.len() > self.max_history {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    /// Clears both undo and redo stacks
+    pub fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::new(100) // Default to 100 actions
+    }
+}
+
 /// Main data structure for storing and managing CSV table data
 ///
 /// The CsvTable struct holds all the data for a loaded CSV file, including:
@@ -235,6 +412,10 @@ pub struct CsvTable {
     /// Used for proper sorting (numeric vs text) and potential future features
     /// Length should match the number of columns in the data
     pub col_types: Vec<ColType>,
+
+    /// Edit history for undo/redo functionality
+    /// Tracks all edit actions to enable undo/redo
+    pub history: History,
 }
 
 impl CsvTable {
@@ -245,6 +426,7 @@ impl CsvTable {
             data: Vec::new(),
             filtered_indices: None,
             col_types: Vec::new(),
+            history: History::default(),
         }
     }
 
@@ -256,6 +438,7 @@ impl CsvTable {
             data: Vec::new(),
             filtered_indices: None,
             col_types: vec![ColType::Text; col_count],
+            history: History::default(),
         }
     }
 
@@ -321,11 +504,86 @@ impl CsvTable {
     pub fn set_cell(&mut self, row: usize, col: usize, value: String) -> bool {
         if let Some(row_data) = self.data.get_mut(row) {
             if let Some(cell) = row_data.get_mut(col) {
-                *cell = value;
+                let old_value = cell.clone();
+                *cell = value.clone();
+
+                // Record the edit action in history
+                let action = EditAction::set_cell(row, col, old_value, value);
+                self.history.push(action);
+
                 return true;
             }
         }
         false
+    }
+
+    /// Sets multiple cells at once (grouped action)
+    /// Records as a single undoable action
+    /// Returns the number of successfully updated cells
+    pub fn set_cells(&mut self, changes: Vec<(usize, usize, String)>) -> usize {
+        let mut successful_changes = Vec::new();
+        let mut count = 0;
+
+        for (row, col, new_value) in changes {
+            if let Some(row_data) = self.data.get_mut(row) {
+                if let Some(cell) = row_data.get_mut(col) {
+                    let old_value = cell.clone();
+                    *cell = new_value.clone();
+                    successful_changes.push((row, col, old_value, new_value));
+                    count += 1;
+                }
+            }
+        }
+
+        if !successful_changes.is_empty() {
+            let action = EditAction::multi_set(successful_changes);
+            self.history.push(action);
+        }
+
+        count
+    }
+
+    /// Undoes the last edit action
+    /// Returns true if an action was undone, false if undo stack is empty
+    pub fn undo(&mut self) -> Result<(), String> {
+        if let Some(action) = self.history.pop_undo() {
+            // Apply the inverse action (swap old and new values)
+            let inverse = action.inverse();
+            inverse.apply(self)?;
+
+            // Push the original action to redo stack
+            self.history.push_redo(action);
+
+            Ok(())
+        } else {
+            Err("Nothing to undo".to_string())
+        }
+    }
+
+    /// Redoes the last undone action
+    /// Returns true if an action was redone, false if redo stack is empty
+    pub fn redo(&mut self) -> Result<(), String> {
+        if let Some(action) = self.history.pop_redo() {
+            // Apply the action
+            action.apply(self)?;
+
+            // Push the action back to undo stack
+            self.history.push_undo(action);
+
+            Ok(())
+        } else {
+            Err("Nothing to redo".to_string())
+        }
+    }
+
+    /// Returns true if there are actions that can be undone
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Returns true if there are actions that can be redone
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
     }
 
     /// Returns an iterator over visible row indices
@@ -1531,5 +1789,240 @@ mod tests {
         // Invalid column means no rows match
         assert!(!table.is_filtered());
         assert_eq!(table.visible_row_count(), 2);
+    }
+
+    // Edit and Undo/Redo tests
+    #[test]
+    fn test_edit_single_cell() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+        table.set_cell(0, 0, "Bob".to_string());
+        assert_eq!(table.get_cell(0, 0), Some("Bob"));
+    }
+
+    #[test]
+    fn test_undo_single_edit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        assert!(!table.can_undo());
+        table.set_cell(0, 0, "Bob".to_string());
+        assert!(table.can_undo());
+
+        assert_eq!(table.get_cell(0, 0), Some("Bob"));
+        table.undo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+    }
+
+    #[test]
+    fn test_redo_single_edit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        table.set_cell(0, 0, "Bob".to_string());
+        assert!(!table.can_redo());
+
+        table.undo().unwrap();
+        assert!(table.can_redo());
+
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+        table.redo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("Bob"));
+    }
+
+    #[test]
+    fn test_multiple_undo_redo() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        table.set_cell(0, 0, "B".to_string());
+        table.set_cell(0, 0, "C".to_string());
+        table.set_cell(0, 0, "D".to_string());
+
+        assert_eq!(table.get_cell(0, 0), Some("D"));
+
+        table.undo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("C"));
+
+        table.undo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("B"));
+
+        table.undo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("A"));
+
+        // Redo
+        table.redo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("B"));
+
+        table.redo().unwrap();
+        assert_eq!(table.get_cell(0, 0), Some("C"));
+    }
+
+    #[test]
+    fn test_new_edit_clears_redo_stack() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        table.set_cell(0, 0, "B".to_string());
+        table.set_cell(0, 0, "C".to_string());
+
+        table.undo().unwrap();
+        assert!(table.can_redo());
+
+        // New edit should clear redo stack
+        table.set_cell(0, 0, "D".to_string());
+        assert!(!table.can_redo());
+    }
+
+    #[test]
+    fn test_multi_cell_edit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string(), "1".to_string()]);
+        table.data.push(vec!["B".to_string(), "2".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let changes = vec![
+            (0, 0, "X".to_string()),
+            (0, 1, "10".to_string()),
+            (1, 0, "Y".to_string()),
+        ];
+
+        let count = table.set_cells(changes);
+        assert_eq!(count, 3);
+
+        assert_eq!(table.get_cell(0, 0), Some("X"));
+        assert_eq!(table.get_cell(0, 1), Some("10"));
+        assert_eq!(table.get_cell(1, 0), Some("Y"));
+    }
+
+    #[test]
+    fn test_undo_multi_cell_edit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string(), "1".to_string()]);
+        table.data.push(vec!["B".to_string(), "2".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let changes = vec![
+            (0, 0, "X".to_string()),
+            (0, 1, "10".to_string()),
+            (1, 0, "Y".to_string()),
+        ];
+
+        table.set_cells(changes);
+
+        // Undo should revert all changes at once
+        table.undo().unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("A"));
+        assert_eq!(table.get_cell(0, 1), Some("1"));
+        assert_eq!(table.get_cell(1, 0), Some("B"));
+    }
+
+    #[test]
+    fn test_redo_multi_cell_edit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string(), "1".to_string()]);
+        table.data.push(vec!["B".to_string(), "2".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number];
+
+        let changes = vec![
+            (0, 0, "X".to_string()),
+            (0, 1, "10".to_string()),
+            (1, 0, "Y".to_string()),
+        ];
+
+        table.set_cells(changes);
+        table.undo().unwrap();
+
+        // Redo should reapply all changes at once
+        table.redo().unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("X"));
+        assert_eq!(table.get_cell(0, 1), Some("10"));
+        assert_eq!(table.get_cell(1, 0), Some("Y"));
+    }
+
+    #[test]
+    fn test_history_limit() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string()]);
+        table.col_types = vec![ColType::Text];
+        table.history = History::new(3); // Limit to 3 actions
+
+        table.set_cell(0, 0, "B".to_string());
+        table.set_cell(0, 0, "C".to_string());
+        table.set_cell(0, 0, "D".to_string());
+        table.set_cell(0, 0, "E".to_string()); // This pushes out the first action
+
+        assert_eq!(table.get_cell(0, 0), Some("E"));
+
+        // Can only undo 3 times (not 4)
+        table.undo().unwrap();
+        table.undo().unwrap();
+        table.undo().unwrap();
+
+        // Should be at "B" now, not "A"
+        assert_eq!(table.get_cell(0, 0), Some("B"));
+
+        // Can't undo anymore
+        assert!(!table.can_undo());
+    }
+
+    #[test]
+    fn test_undo_redo_with_no_changes() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        assert!(table.undo().is_err());
+        assert!(table.redo().is_err());
+    }
+
+    #[test]
+    fn test_edit_and_undo_preserves_row_integrity() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string(), "NYC".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Number, ColType::Text];
+
+        table.set_cell(0, 1, "25".to_string());
+
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+        assert_eq!(table.get_cell(0, 1), Some("25"));
+        assert_eq!(table.get_cell(0, 2), Some("NYC"));
+
+        table.undo().unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+        assert_eq!(table.get_cell(0, 1), Some("30"));
+        assert_eq!(table.get_cell(0, 2), Some("NYC"));
+    }
+
+    #[test]
+    fn test_grouped_edit_is_single_undo_action() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["A".to_string(), "B".to_string()]);
+        table.col_types = vec![ColType::Text, ColType::Text];
+
+        let changes = vec![(0, 0, "X".to_string()), (0, 1, "Y".to_string())];
+        table.set_cells(changes);
+
+        assert_eq!(table.get_cell(0, 0), Some("X"));
+        assert_eq!(table.get_cell(0, 1), Some("Y"));
+
+        // Single undo should revert both changes
+        table.undo().unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("A"));
+        assert_eq!(table.get_cell(0, 1), Some("B"));
+
+        // No more undo actions
+        assert!(!table.can_undo());
     }
 }
