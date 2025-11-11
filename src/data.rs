@@ -24,6 +24,8 @@ pub enum CsvError {
     Csv(csv::Error),
     /// JSON serialization/deserialization error
     Json(serde_json::Error),
+    /// XLSX error during Excel operations
+    Xlsx(rust_xlsxwriter::XlsxError),
     /// Invalid data structure (e.g., inconsistent column counts)
     InvalidData(String),
 }
@@ -34,6 +36,7 @@ impl std::fmt::Display for CsvError {
             CsvError::Io(e) => write!(f, "IO error: {}", e),
             CsvError::Csv(e) => write!(f, "CSV error: {}", e),
             CsvError::Json(e) => write!(f, "JSON error: {}", e),
+            CsvError::Xlsx(e) => write!(f, "XLSX error: {}", e),
             CsvError::InvalidData(s) => write!(f, "Invalid data: {}", s),
         }
     }
@@ -56,6 +59,12 @@ impl From<csv::Error> for CsvError {
 impl From<serde_json::Error> for CsvError {
     fn from(err: serde_json::Error) -> Self {
         CsvError::Json(err)
+    }
+}
+
+impl From<rust_xlsxwriter::XlsxError> for CsvError {
+    fn from(err: rust_xlsxwriter::XlsxError) -> Self {
+        CsvError::Xlsx(err)
     }
 }
 
@@ -994,6 +1003,56 @@ impl CsvTable {
     pub fn to_json_file<P: AsRef<Path>>(&self, path: P, pretty: bool) -> Result<(), CsvError> {
         let json = self.to_json(pretty)?;
         std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Exports the table to an Excel (.xlsx) file
+    ///
+    /// Creates an Excel workbook with a single sheet containing the table data.
+    /// Headers (if present) are written to the first row.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the XLSX file will be written
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) on success or a CsvError on failure
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use csv_navigator::data::CsvTable;
+    /// let mut table = CsvTable::with_headers(vec!["Name".to_string(), "Age".to_string()]);
+    /// table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+    /// table.to_xlsx_file("output.xlsx").unwrap();
+    /// ```
+    pub fn to_xlsx_file<P: AsRef<Path>>(&self, path: P) -> Result<(), CsvError> {
+        use rust_xlsxwriter::Workbook;
+
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
+        let mut current_row: u32 = 0;
+
+        // Write headers if present
+        if let Some(headers) = &self.headers {
+            for (col_idx, header) in headers.iter().enumerate() {
+                worksheet.write_string(current_row, col_idx as u16, header)?;
+            }
+            current_row += 1;
+        }
+
+        // Write all data rows
+        for row in &self.data {
+            for (col_idx, cell_value) in row.iter().enumerate() {
+                worksheet.write_string(current_row, col_idx as u16, cell_value)?;
+            }
+            current_row += 1;
+        }
+
+        // Save the workbook
+        workbook.save(path)?;
         Ok(())
     }
 }
@@ -2194,5 +2253,116 @@ mod tests {
         let array = parsed.as_array().unwrap();
         assert_eq!(array[0]["Text"], "Hello \"World\"");
         assert_eq!(array[1]["Text"], "Line1\nLine2");
+    }
+
+    // XLSX export tests
+    #[test]
+    fn test_xlsx_export_with_headers() {
+        use tempfile::tempdir;
+
+        let mut table = CsvTable::with_headers(vec![
+            "Name".to_string(),
+            "Age".to_string(),
+            "City".to_string(),
+        ]);
+        table.data.push(vec!["Alice".to_string(), "30".to_string(), "NYC".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string(), "LA".to_string()]);
+
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.xlsx");
+
+        // Export to XLSX
+        table.to_xlsx_file(&file_path).unwrap();
+
+        // Verify file exists and is not empty
+        assert!(file_path.exists());
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn test_xlsx_export_without_headers() {
+        use tempfile::tempdir;
+
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string(), "30".to_string()]);
+        table.data.push(vec!["Bob".to_string(), "25".to_string()]);
+
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_no_headers.xlsx");
+
+        // Export to XLSX
+        table.to_xlsx_file(&file_path).unwrap();
+
+        // Verify file exists and is not empty
+        assert!(file_path.exists());
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn test_xlsx_export_empty_table() {
+        use tempfile::tempdir;
+
+        let table = CsvTable::new();
+
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_empty.xlsx");
+
+        // Export empty table should succeed
+        table.to_xlsx_file(&file_path).unwrap();
+
+        // File should exist even if empty
+        assert!(file_path.exists());
+    }
+
+    #[test]
+    fn test_xlsx_export_special_characters() {
+        use tempfile::tempdir;
+
+        let mut table = CsvTable::with_headers(vec!["Text".to_string(), "Number".to_string()]);
+        table.data.push(vec!["Hello \"World\"".to_string(), "123".to_string()]);
+        table.data.push(vec!["Line1\nLine2".to_string(), "456.78".to_string()]);
+        table.data.push(vec!["Special: @#$%".to_string(), "-999".to_string()]);
+
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_special.xlsx");
+
+        // Export with special characters should succeed
+        table.to_xlsx_file(&file_path).unwrap();
+
+        assert!(file_path.exists());
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn test_xlsx_export_large_dataset() {
+        use tempfile::tempdir;
+
+        let mut table = CsvTable::with_headers(vec![
+            "ID".to_string(),
+            "Name".to_string(),
+            "Value".to_string(),
+        ]);
+
+        // Add 1000 rows
+        for i in 0..1000 {
+            table.data.push(vec![
+                i.to_string(),
+                format!("Person {}", i),
+                (i as f64 * 1.5).to_string(),
+            ]);
+        }
+
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_large.xlsx");
+
+        // Export large dataset should succeed
+        table.to_xlsx_file(&file_path).unwrap();
+
+        assert!(file_path.exists());
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert!(metadata.len() > 0);
     }
 }
