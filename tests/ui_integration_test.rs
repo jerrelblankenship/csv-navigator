@@ -6,8 +6,10 @@ mod ui_tests {
     use csv_navigator::{create_app_with_config, AppConfig};
 
     #[test]
+    #[cfg_attr(target_os = "macos", ignore)]
     fn test_create_app_with_default_config() {
         // Test that create_app_with_config applies the default configuration
+        // Note: Skipped on macOS because EventLoop must be created on the main thread
         // In headless environment, window creation may fail, but config should be validated
         let config = AppConfig::new();
         let result = create_app_with_config(config);
