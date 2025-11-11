@@ -4,7 +4,9 @@
 //! including the CsvTable struct for storing and manipulating CSV content.
 
 use csv::ReaderBuilder;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -58,6 +60,15 @@ pub enum ColType {
     Text,
     /// Numeric column - sorted numerically
     Number,
+}
+
+/// Sort order enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    /// Ascending order (A-Z, 0-9)
+    Ascending,
+    /// Descending order (Z-A, 9-0)
+    Descending,
 }
 
 /// Main data structure for storing and managing CSV table data
@@ -268,9 +279,94 @@ impl CsvTable {
             .collect();
     }
 
+    /// Sorts the table by a specified column
+    ///
+    /// Uses Rayon's parallel sorting for better performance on large datasets.
+    /// Sorting is done in-place and respects the column's inferred type
+    /// (numeric vs text sorting).
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - Zero-based column index to sort by
+    /// * `order` - Sort order (Ascending or Descending)
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) on success or Err if column index is out of bounds
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use csv_navigator::data::{CsvTable, SortOrder};
+    /// let mut table = CsvTable::new();
+    /// table.data.push(vec!["30".to_string(), "Alice".to_string()]);
+    /// table.data.push(vec!["25".to_string(), "Bob".to_string()]);
+    /// table.col_types = vec![csv_navigator::data::ColType::Number, csv_navigator::data::ColType::Text];
+    ///
+    /// table.sort_by_column(0, SortOrder::Ascending).unwrap();
+    /// assert_eq!(table.get_cell(0, 0), Some("25"));
+    /// assert_eq!(table.get_cell(1, 0), Some("30"));
+    /// ```
+    pub fn sort_by_column(&mut self, column: usize, order: SortOrder) -> Result<(), String> {
+        // For empty tables, sorting is a no-op (always succeeds)
+        if self.data.is_empty() {
+            return Ok(());
+        }
+
+        if column >= self.column_count() {
+            return Err(format!(
+                "Column index {} out of bounds (table has {} columns)",
+                column,
+                self.column_count()
+            ));
+        }
+
+        let col_type = self.col_types.get(column).copied().unwrap_or(ColType::Text);
+
+        // Clear any active filter as sorting changes row order
+        self.filtered_indices = None;
+
+        // Use parallel sorting for better performance on large datasets
+        match col_type {
+            ColType::Number => {
+                self.data.par_sort_unstable_by(|a, b| {
+                    let val_a = a.get(column).and_then(|s| s.parse::<f64>().ok());
+                    let val_b = b.get(column).and_then(|s| s.parse::<f64>().ok());
+
+                    let cmp = match (val_a, val_b) {
+                        (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+                        (Some(_), None) => Ordering::Less,  // Numbers before non-numbers
+                        (None, Some(_)) => Ordering::Greater,
+                        (None, None) => Ordering::Equal,
+                    };
+
+                    match order {
+                        SortOrder::Ascending => cmp,
+                        SortOrder::Descending => cmp.reverse(),
+                    }
+                });
+            }
+            ColType::Text => {
+                self.data.par_sort_unstable_by(|a, b| {
+                    let val_a = a.get(column).map(|s| s.as_str()).unwrap_or("");
+                    let val_b = b.get(column).map(|s| s.as_str()).unwrap_or("");
+
+                    let cmp = val_a.cmp(val_b);
+
+                    match order {
+                        SortOrder::Ascending => cmp,
+                        SortOrder::Descending => cmp.reverse(),
+                    }
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Loads a CSV file from a file path
     ///
-    /// This method uses buffered IO for efficient reading of large files.
+    /// This method uses buffered IO for efficient reading of large datasets.
     /// It automatically detects whether the CSV has headers based on the `has_headers` parameter.
     ///
     /// # Arguments
@@ -832,5 +928,119 @@ mod tests {
         table.infer_column_types(None);
 
         assert_eq!(table.col_types.len(), 0);
+    }
+
+    // Sorting Tests
+
+    #[test]
+    fn test_sort_numeric_ascending() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["10".to_string()]);
+        table.data.push(vec!["20".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        table.sort_by_column(0, SortOrder::Ascending).unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("10"));
+        assert_eq!(table.get_cell(1, 0), Some("20"));
+        assert_eq!(table.get_cell(2, 0), Some("30"));
+    }
+
+    #[test]
+    fn test_sort_numeric_descending() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["10".to_string()]);
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["20".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        table.sort_by_column(0, SortOrder::Descending).unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("30"));
+        assert_eq!(table.get_cell(1, 0), Some("20"));
+        assert_eq!(table.get_cell(2, 0), Some("10"));
+    }
+
+    #[test]
+    fn test_sort_text_ascending() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Charlie".to_string()]);
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        table.sort_by_column(0, SortOrder::Ascending).unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("Alice"));
+        assert_eq!(table.get_cell(1, 0), Some("Bob"));
+        assert_eq!(table.get_cell(2, 0), Some("Charlie"));
+    }
+
+    #[test]
+    fn test_sort_text_descending() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["Alice".to_string()]);
+        table.data.push(vec!["Charlie".to_string()]);
+        table.data.push(vec!["Bob".to_string()]);
+        table.col_types = vec![ColType::Text];
+
+        table.sort_by_column(0, SortOrder::Descending).unwrap();
+
+        assert_eq!(table.get_cell(0, 0), Some("Charlie"));
+        assert_eq!(table.get_cell(1, 0), Some("Bob"));
+        assert_eq!(table.get_cell(2, 0), Some("Alice"));
+    }
+
+    #[test]
+    fn test_sort_preserves_row_integrity() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string(), "Alice".to_string()]);
+        table.data.push(vec!["10".to_string(), "Charlie".to_string()]);
+        table.data.push(vec!["20".to_string(), "Bob".to_string()]);
+        table.col_types = vec![ColType::Number, ColType::Text];
+
+        table.sort_by_column(0, SortOrder::Ascending).unwrap();
+
+        // Check that rows stayed together
+        assert_eq!(table.get_cell(0, 0), Some("10"));
+        assert_eq!(table.get_cell(0, 1), Some("Charlie"));
+        assert_eq!(table.get_cell(1, 0), Some("20"));
+        assert_eq!(table.get_cell(1, 1), Some("Bob"));
+        assert_eq!(table.get_cell(2, 0), Some("30"));
+        assert_eq!(table.get_cell(2, 1), Some("Alice"));
+    }
+
+    #[test]
+    fn test_sort_invalid_column() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["1".to_string()]);
+        table.col_types = vec![ColType::Number];
+
+        let result = table.sort_by_column(5, SortOrder::Ascending);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_sort_empty_table() {
+        let mut table = CsvTable::new();
+        table.col_types = vec![ColType::Text];
+
+        let result = table.sort_by_column(0, SortOrder::Ascending);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_sort_clears_filter() {
+        let mut table = CsvTable::new();
+        table.data.push(vec!["30".to_string()]);
+        table.data.push(vec!["10".to_string()]);
+        table.filtered_indices = Some(vec![0]);
+        table.col_types = vec![ColType::Number];
+
+        assert!(table.is_filtered());
+        table.sort_by_column(0, SortOrder::Ascending).unwrap();
+        assert!(!table.is_filtered());
     }
 }
