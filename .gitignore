@@ -11,6 +11,9 @@ Cargo.lock
 !.vscode/tasks.json
 !.vscode/launch.json
 
+# Criterion benchmark results
+/target/criterion/
+
 
 
 # Added by cargo

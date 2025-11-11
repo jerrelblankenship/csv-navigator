@@ -19,6 +19,7 @@ slint-build = "1.11.0"
 
 [dev-dependencies]
 tempfile = "3.8"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [lib]
 path = "src/lib.rs"
@@ -26,3 +27,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "csv-navigator"
 path = "src/main.rs"
+
+[[bench]]
+name = "large_dataset"
+harness = false
